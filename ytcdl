@@ -1,0 +1,59 @@
+#!/bin/bash
+
+#Debug
+#echo "Press CTRL+C to proceed."
+#trap "pkill -f 'sleep 1h'" INT
+#trap "set +x ; sleep 1h ; set -x" DEBUG
+
+set -e
+set -o xtrace
+
+#Options
+OUTDIR="/sdcard/Movies"
+YTDLTMP="/sdcard/Movies/.data/.ytdl"
+TO="%(title)s.%(ext)s"
+FV="bestvideo[vcodec!=vp9]/best[vcodec!=vp9]"
+FA="140/bestaudio"
+#Check for requirements
+if [ "$1" == "-h" ] || [ "$1" == "--help" ]; then echo "Help placeholder" && exit; fi
+if ! hash youtube-dl; then echo "Error: youtube-dl must be installed and executable." && exit; fi
+if ! hash ffmpeg; then echo "Error: ffmpeg must be installed and executable." && exit; fi
+if ! hash sed; then echo "Error: sed must be installed and executable." && exit; fi
+if [ ! -d "$YTDLTMP" ]; then mkdir "$YTDLTMP"; fi
+
+#Check for youtube url
+if [[ ! "$1" == *"youtu.be"* ]] && [[ ! "$1" == *"youtube.com"* ]]; then echo "This script only supports \"https://youtube.com/\". Run this script with \"-h\" or \"--help\" to get more info." && echo "Passing args to youtube-dl..." && youtube-dl $1 $2 $3 $4 $5 && exit; fi
+YTDLCMD=$(youtube-dl $(echo $1) --ignore-config -R infinite --socket-timeout 30 -f "$FV"",""$FA" -o "/$TO" --get-url --get-filename)
+#if [[ "$1" == *"youtube.com/playlist"* ]]
+#then
+#echo "Playlist not yet supported" && youtube-dl $1 $2 $3 $4 $5; exit
+#1p=1
+#2p=2
+#3p=3
+#4p=4
+#for "$(read line)"/4 in "$YTDLCMD"
+#do
+#YTVURL=$(echo "$YTDLCMD" | sed -n "$1p"p)
+#YTAURL=$(echo "$YTDLCMD" | sed -n "$3p"p)
+#TVOUTPUT=$(echo "$YTDLCMD" | sed -n "$2p"p)
+#TAOUTPUT=$(echo "$YTDLCMD" | sed -n "$4p"p)
+#OUTPUT="$OUTDIR""$TVOUTPUT"
+#1p="$1p"+4
+#2p="$2p"+4
+#3p="$3p"+4
+#4p="$4p"+4
+#ffmpeg -i "$YTVURL" -i "$YTAURL" -loglevel 32 -map 0:v -map 1:a -c copy "$OUTPUT"
+#fi
+if [[ "$1" == *"youtu.be"* ]] || [[ "$1" == *"youtube.com"* ]]
+then
+YTVURL=$(echo "$YTDLCMD" | sed -n 1p)
+YTAURL=$(echo "$YTDLCMD" | sed -n 3p)
+TVOUTPUT=$(echo "$YTDLCMD" | sed -n 2p)
+TAOUTPUT=$(echo "$YTDLCMD" | sed -n 4p)
+OUTPUT="$OUTDIR""$TVOUTPUT"
+#Check if video has already been downloaded
+if [ -e  "$OUTPUT" ]; then read -r -p "File already exists. Overwrite? [Y/N]" overwrite; overwrite=${overwrite,,}; if [[ $overwrite =~ ^(yes|y)$ ]]; then rm -rf "$OUTPUT"; else echo "Exiting" && exit; fi; fi
+#Download and combine with ffmpeg
+ffmpeg -i "$YTVURL" -i "$YTAURL" -loglevel 32 -map 0:v -map 1:a -c copy "$OUTPUT"
+fi
+exit
