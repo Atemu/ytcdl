@@ -5,55 +5,161 @@
 #trap "pkill -f 'sleep 1h'" INT
 #trap "set +x ; sleep 1h ; set -x" DEBUG
 
+#set -u
 set -e
-set -o xtrace
+#set -o xtrace
 
 #Options
-OUTDIR="/sdcard/Movies"
-YTDLTMP="/sdcard/Movies/.data/.ytdl"
-TO="%(title)s.%(ext)s"
-FV="bestvideo[vcodec!=vp9]/best[vcodec!=vp9]"
-FA="140/bestaudio"
-#Check for requirements
-if [ "$1" == "-h" ] || [ "$1" == "--help" ]; then echo "Help placeholder" && exit; fi
-if ! hash youtube-dl; then echo "Error: youtube-dl must be installed and executable." && exit; fi
-if ! hash ffmpeg; then echo "Error: ffmpeg must be installed and executable." && exit; fi
-if ! hash sed; then echo "Error: sed must be installed and executable." && exit; fi
-if [ ! -d "$YTDLTMP" ]; then mkdir "$YTDLTMP"; fi
+OUTDIR="/sdcard/Movies" 			#desired output folder
+YTDLTMP="/tmp"					#temp folder, '/tmp' should be fine. (don't put '/' behind the folder!)
+TO="%(title)s [%(id)s]"			#desired filename in youtube-dl output syntax
+FV="bestvideo[vcodec!=vp9][height<2160]"	#desired video quality in youtube-dl quality selection syntax
+FA="140/bestaudio"				#desired audio quality in youtube-dl quality selection syntax
+Y_O=1						#always overwrite files
+Y_R=0						#Only ask for retry if the downloader doesn't return 0
+DLMODE="aria2c"					#choose "aria2c" or "ffmpeg" downloader for youtube videos
+OF=".mkv"					#choose output file extension (.mkv is the best usually)
+DLLOOP=1					#ask for next url after download has finished
+SUB_LANG="enUS"					#preferred subtitle language for crunchyroll
+SUB_FMT="ass"					#enter your prefered subtitle format, "ass" and "srt" only
 
-#Check for youtube url
-if [[ ! "$1" == *"youtu.be"* ]] && [[ ! "$1" == *"youtube.com"* ]]; then echo "This script only supports \"https://youtube.com/\". Run this script with \"-h\" or \"--help\" to get more info." && echo "Passing args to youtube-dl..." && youtube-dl $1 $2 $3 $4 $5 && exit; fi
-YTDLCMD=$(youtube-dl $(echo $1) --ignore-config -R infinite --socket-timeout 30 -f "$FV"",""$FA" -o "/$TO" --get-url --get-filename)
-#if [[ "$1" == *"youtube.com/playlist"* ]]
-#then
-#echo "Playlist not yet supported" && youtube-dl $1 $2 $3 $4 $5; exit
-#1p=1
-#2p=2
-#3p=3
-#4p=4
-#for "$(read line)"/4 in "$YTDLCMD"
-#do
-#YTVURL=$(echo "$YTDLCMD" | sed -n "$1p"p)
-#YTAURL=$(echo "$YTDLCMD" | sed -n "$3p"p)
-#TVOUTPUT=$(echo "$YTDLCMD" | sed -n "$2p"p)
-#TAOUTPUT=$(echo "$YTDLCMD" | sed -n "$4p"p)
-#OUTPUT="$OUTDIR""$TVOUTPUT"
-#1p="$1p"+4
-#2p="$2p"+4
-#3p="$3p"+4
-#4p="$4p"+4
-#ffmpeg -i "$YTVURL" -i "$YTAURL" -loglevel 32 -map 0:v -map 1:a -c copy "$OUTPUT"
-#fi
-if [[ "$1" == *"youtu.be"* ]] || [[ "$1" == *"youtube.com"* ]]
-then
-YTVURL=$(echo "$YTDLCMD" | sed -n 1p)
-YTAURL=$(echo "$YTDLCMD" | sed -n 3p)
-TVOUTPUT=$(echo "$YTDLCMD" | sed -n 2p)
-TAOUTPUT=$(echo "$YTDLCMD" | sed -n 4p)
-OUTPUT="$OUTDIR""$TVOUTPUT"
-#Check if video has already been downloaded
-if [ -e  "$OUTPUT" ]; then read -r -p "File already exists. Overwrite? [Y/N]" overwrite; overwrite=${overwrite,,}; if [[ $overwrite =~ ^(yes|y)$ ]]; then rm -rf "$OUTPUT"; else echo "Exiting" && exit; fi; fi
-#Download and combine with ffmpeg
-ffmpeg -i "$YTVURL" -i "$YTAURL" -loglevel 32 -map 0:v -map 1:a -c copy "$OUTPUT"
+ARIA_ARGS='--console-log-level warn -c --file-allocation=none --no-conf=true -m 0 --allow-overwrite=true -t 60 --auto-file-renaming=false -j6 -x6 -s36'
+STARTPOS="00:00:00"
+
+
+#Check for requirements
+
+if [ "$1" == "-h" ] || [ "$1" == "--help" ]; then echo "Help placeholder" && exit; fi
+if ! hash youtube-dl; then read -r -p "youtube-dl doesn't seem to be installed, install it? [Y/N]" instally; instally=${instally,,}; if [[ $instally =~ ^(yes|y)$ ]]; then if hash pip; then pip install youtube-dl; elif hash apt-get; then apt-get -y install youtube-dl; else exit; fi; else exit; fi; fi
+if ! hash ffmpeg; then read -r -p "ffmpeg doesn't seem to be installed, install it? [Y/N]" installf; installf=${installf,,}; if [[ $installf =~ ^(yes|y)$ ]]; then if hash apt-get; then apt-get -y install ffmpeg; else exit; fi; else exit; fi; fi
+if ! hash aria2c; then read -r -p "aria2c doesn't seem to be installed, install it? [Y/N]" installf; installf=${installf,,}; if [[ $installf =~ ^(yes|y)$ ]]; then if hash apt-get; then apt-get -y install aria2c; else exit; fi; else exit; fi; fi
+if ! hash sed; then read -r -p "sed doesn't seem to be installed, install it? [Y/N]" installs; installs=${installs,,}; if [[ $installs =~ ^(yes|y)$ ]]; then if hash apt-get; then apt-get -y install sed; else exit; fi; else exit; fi; fi
+
+#start of the download loop
+while true; do
+  unset URL
+  read -p "Enter URL: " URL
+  #Check for youtube url
+  if [[ "$URL" == *"youtu.be"* ]] || [[ "$URL" == *"youtube.com"* ]]
+  then
+    while true; do
+      YTDLCMD=$(youtube-dl "$URL" --ignore-config -R infinite --socket-timeout 30 --prefer-insecure  -f "$FV"",""$FA" -o "/$TO" --get-url --get-filename)
+      YTVURL=$(echo "$YTDLCMD" | sed -n 1p)
+      YTAURL=$(echo "$YTDLCMD" | sed -n 3p)
+      TVOUTPUT=$(echo "$YTDLCMD" | sed -n 2p).TEMPVIDEO.mkv
+      TAOUTPUT=$(echo "$YTDLCMD" | sed -n 4p).TEMPAUDIO.mkv
+      OUTPUT="$OUTDIR""${TVOUTPUT//.TEMPVIDEO.mkv/$OF}"
+      TVOUTPUT=$YTDLTMP$TVOUTPUT
+      TAOUTPUT=$YTDLTMP$TAOUTPUT
+      #Check if video has already been downloaded
+      if [ -e  "$OUTPUT" ] && [ $Y_O == 0 ]
+      then read -r -p "File already exists. Overwrite? [Y/N]" overwrite
+        overwrite=${overwrite,,}
+        if [[ $overwrite =~ ^(yes|y)$ ]]
+        then rm  "$OUTPUT"
+        else echo "Exiting" && break
+        fi
+      elif [ -e "$OUTPUT" ]
+      then rm "$OUTPUT"
+      fi
+      #Download and combine with ffmpeg
+      if [[ "$DLMODE" == "ffmpeg" ]]
+      then      ffmpeg -ss "$STARTPOS" -i "$YTVURL" -i "$YTAURL" -loglevel 32 -map 0:v -map 1:a -c copy "$OUTPUT"
+      elif [[ "$DLMODE" == "aria2c" ]]
+      then aria2c $ARIA_ARGS -o "$TAOUTPUT" "$YTAURL" && \
+        aria2c $ARIA_ARGS -o "$TVOUTPUT" "$YTVURL" && \
+        ffmpeg -i "$TVOUTPUT" -i "$TAOUTPUT" -c copy -map 0:v -map 1:a "$OUTPUT" && \
+        rm "$TAOUTPUT" && \
+        rm "$TVOUTPUT"
+      fi
+      if [ ! $? == 0 ] && [ $Y_R == 1 ] || [ $Y_R == 0 ]; then
+        read -r -p "ffmpeg exited with an error, redownload?" retry; retry=${retry,,}; Y_O=1; if [[ ! $retry =~ ^(yes|y)$ ]]; then Y_O=0; read -p "Do you want to download another video [Y/N]?" newurl; newurl=${newurl,,}; if [[ ! $newurl =~ ^(yes|y)$ ]]; then break; break; else break; fi; fi
+      elif [[ $Y_O == 0 ]]
+      then break
+      fi
+    done
+    #m3u8 websites
+  elif [[ "$URL" == *"twitch.tv"* ]] || [[ "$URL" == *"zdf.de"* ]] || [[ "$URL" == *"theguardian.com/stage/video/"* ]] || [[ "$URL" == *"www.crunchyroll.com"* ]]
+  # || [[ "$URL" == *"bbc.co.uk"* ]]
+  then
+    while true; do
+      YTDLCMD=$(youtube-dl "$URL" --ignore-config -R infinite --socket-timeout 30 --prefer-insecure  -f best -o "/$TO" --get-url --get-filename --write-sub --all-subs)
+      YTVURL=$(echo "$YTDLCMD" | sed -n 1p)
+      TVOUTPUT=$(echo "$YTDLCMD" | sed -n 2p).m3u8
+      SURLS=$(echo "$YTDLCMD" | tail -n +3)
+      OUTPUT="$OUTDIR""${TVOUTPUT//m3u8/$OF}"
+      TVOUTPUT="$YTDLTMP$TVOUTPUT"
+      #Check if video has already been downloaded
+      if [ -e  "$OUTPUT" ] && [ $Y_O == 0 ]
+      then read -r -p "File already exists. Overwrite? [Y/N]" overwrite
+        overwrite=${overwrite,,}
+        if [[ $overwrite =~ ^(yes|y)$ ]]
+        then rm  "$OUTPUT"
+        else echo "Exiting" && break
+        fi
+      elif [ -e "$OUTPUT" ]
+      then rm "$OUTPUT"
+      fi
+      #Download and combine with ffmpeg
+      if [[ "$DLMODE" == "ffmpeg" ]]
+      then      ffmpeg -ss "$STARTPOS" -i "$YTVURL" -loglevel 32 -map 0:v -map 1:a -c copy "$OUTPUT"
+      elif [[ "$DLMODE" == "aria2c" ]]
+      then
+        #tempdir
+        if [ ! -d "$TVOUTPUT" ]
+        then \
+          mkdir "$TVOUTPUT"
+        fi
+        #safety exit on error
+        set -e
+        #download m3u8 file
+        aria2c $ARIA_ARGS -q -o "$TVOUTPUT"/m3u8.m3u8 "$YTVURL"
+        #website specific m3u8 downloading mechanisms
+        #crunchyroll
+        if [[ "$URL" == *"crunchyroll.com"* ]]
+        then \
+          #get url to key file from m3u8
+          KEYURL=$(cat "$TVOUTPUT"/m3u8.m3u8 | grep "#EXT-X-KEY:METHOD=AES-128,URI=" | sed 's/#EXT-X-KEY:METHOD=AES-128,URI=//')
+          #download keyfile
+          aria2c $ARIA_ARGS -d "$TVOUTPUT" "${KEYURL//\"/}"
+          #download all *.ts files
+          aria2c $ARIA_ARGS -i "$TVOUTPUT"/m3u8.m3u8 -d "$TVOUTPUT"
+          #convert urls in m3u8 to path to downloaded files
+          sed s\!#EXT-X-KEY:METHOD=AES-128,URI=.*\!#EXT-X-KEY:METHOD=AES-128,URI=\""$TVOUTPUT"/encryption.key\"\!g "$TVOUTPUT"/m3u8.m3u8 | sed s\!.*mp4/\!"$TVOUTPUT"/\!g | sed 's!\?.*!!' > "$TVOUTPUT"/local.m3u8
+          #download subtitles
+          youtube-dl -o "$TVOUTPUT"/subtitles --ignore-config --sub-lang "$SUB_LANG" --sub-format "$SUB_FMT" --skip-download --write-sub "$URL"
+          #combine *.ts files and subtitles
+          ffmpeg -i "$TVOUTPUT"/local.m3u8 -i "${TVOUTPUT::-6}"*."$SUB_FMT" -c copy "$OUTPUT"
+      fi
+      #twitch
+      if [[ "$URL" == *"twitch.tv"* ]]
+      then \
+        #add full url to the relative url in m3u8 (needed for aria2 to download them)
+        sed s\!index-\!"${YTVURL%/*}"/index-\!g "$TVOUTPUT"/m3u8.m3u8 > "$TVOUTPUT"/tmp.m3u8
+        mv "$TVOUTPUT"/tmp.m3u8 "$TVOUTPUT"/m3u8.m3u8
+        #download *.ts files
+        aria2c $ARIA_ARGS -i "$TVOUTPUT"/m3u8.m3u8 --continue=false --auto-file-renaming=true -d "$TVOUTPUT"
+        #combine *.ts files
+        ls -vQ "$TVOUTPUT"/*.ts | xargs cat | ffmpeg -i - -c copy "$OUTPUT"
+      fi
+    fi
+    if [ ! $? == 0 ] && [ $Y_R == 1 ] || [ $Y_R == 0 ]; then
+      read -r -p "ffmpeg exited with an error, redownload?" retry; retry=${retry,,}; Y_O=1; if [[ ! $retry =~ ^(yes|y)$ ]]; then Y_O=0; read -p "Do you want to download another video [Y/N]?" newurl; newurl=${newurl,,}; if [[ ! $newurl =~ ^(yes|y)$ ]]; then break; break; else break; fi; fi
+    elif [[ $Y_O == 0 ]]
+    then break
+    fi
+  done
+  
+  #url not supported
+  
+else
+  echo "This script only supports \"https://youtube.com/\". Run this script with \"-h\" or \"--help\" to get more info." && echo "Passing args to youtube-dl..." && youtube-dl "$URL" "$1" "$2" "$3" "$4" "$5"
 fi
-exit
+if [[ $DLLOOP == 0 ]]
+then exit
+fi
+done
+
+
+
+
